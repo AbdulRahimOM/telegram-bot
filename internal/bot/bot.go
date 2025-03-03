@@ -4,15 +4,19 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/AbdulRahimOM/telegram-bot/internal/config"
 	weatherapp "github.com/AbdulRahimOM/telegram-bot/internal/weather_app"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"golang.org/x/time/rate"
 )
 
 var (
-	bot     *tgbotapi.BotAPI
-	updates tgbotapi.UpdatesChannel
+	bot          *tgbotapi.BotAPI
+	updates      tgbotapi.UpdatesChannel
+	userLimiters sync.Map
 
 	defaultLocation = make(map[int64]weatherapp.Location)
 )
@@ -35,6 +39,9 @@ const (
 
 	`
 	dontKnowMessage = "I don't know what to say 🤷‍♂️"
+
+	maxRequestsPerMinute = 10 //change this in rateLimitMsg constant also
+	rateLimitMsg         = "Rate limit exceeded 10 requests per minute). Please wait."
 )
 
 func InitBot() {
@@ -56,11 +63,31 @@ func InitBot() {
 	updates = bot.GetUpdatesChan(u)
 }
 
+func getLimiter(userID int64) *rate.Limiter {
+	limiter, exists := userLimiters.Load(userID)
+	if !exists {
+		limiter = rate.NewLimiter(rate.Every(time.Minute/time.Duration(maxRequestsPerMinute)), maxRequestsPerMinute)
+		userLimiters.Store(userID, limiter)
+	}
+	return limiter.(*rate.Limiter)
+}
+
 func RunBot() {
 	var msg tgbotapi.MessageConfig
 	fmt.Println("Running bot...")
 	for update := range updates {
 		if update.Message == nil {
+			continue
+		}
+
+		userID := update.Message.Chat.ID
+		log.Printf("[%d] %s", userID, update.Message.Text)
+
+		limiter := getLimiter(userID)
+
+		// Apply rate limiting
+		if !limiter.Allow() {
+			bot.Send(tgbotapi.NewMessage(userID, rateLimitMsg))
 			continue
 		}
 
